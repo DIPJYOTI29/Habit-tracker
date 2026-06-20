@@ -1,0 +1,502 @@
+import { useState, useEffect, useRef } from "react";
+
+const STORAGE_KEY = "habit_tracker_v2";
+const TODAY = new Date().toISOString().slice(0,10);
+const DAY_OF_WEEK = new Date().getDay();
+
+function toDateStr(d){ return d.toISOString().slice(0,10); }
+function getLast30(){ return Array.from({length:30},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-29+i); return toDateStr(d); }); }
+function getLast7(){ return Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-6+i); return toDateStr(d); }); }
+
+const CATS = ["Health","Study","Work","Mindset","Fitness","Learning","Productivity","Wellness"];
+const CAT_COLORS = {Health:"#D85A30",Study:"#378ADD",Work:"#7F77DD",Mindset:"#D4537E",Fitness:"#BA7517",Learning:"#1D9E75",Productivity:"#534AB7",Wellness:"#0F6E56"};
+const HABIT_COLORS = ["#378ADD","#7F77DD","#D85A30","#BA7517","#D4537E","#1D9E75","#534AB7","#0F6E56"];
+
+const TEMPLATES = {
+  Health:["Drink 8 glasses of water","Sleep 8 hours","No junk food","Take vitamins"],
+  Study:["Read for 30 mins","Revise notes","Solve 5 problems","No phone while studying"],
+  Work:["Clear inbox","Deep work 2hrs","Plan tomorrow","Review goals"],
+  Mindset:["Meditate 10 mins","Journal entry","Gratitude list","No negativity"],
+  Fitness:["30 min workout","10k steps","Stretch 15 mins","No elevator"],
+  Learning:["Watch 1 lecture","Practice skill 30 mins","Learn 5 new words","Read article"],
+  Productivity:["Use Pomodoro","No social media before noon","Weekly review","Prioritize top 3 tasks"],
+  Wellness:["Go outside","Talk to a friend","Screen-free hour","Cook a healthy meal"],
+};
+
+const QUOTES = [
+  "Small steps every day lead to big changes.",
+  "Discipline is choosing between what you want now and what you want most.",
+  "Every action you take is a vote for the person you want to become.",
+  "Consistency beats intensity every time.",
+  "A year from now you'll wish you started today.",
+  "You don't rise to the level of your goals — you fall to the level of your systems.",
+  "The secret of getting ahead is getting started.",
+];
+
+const quote = QUOTES[new Date().getDate() % QUOTES.length];
+
+async function load(){ try{ const r=await window.storage.get(STORAGE_KEY); return r?JSON.parse(r.value):null; } catch{ return null; } }
+async function save(d){ try{ await window.storage.set(STORAGE_KEY,JSON.stringify(d)); } catch{} }
+
+function calcStreak(logs,hid){
+  let s=0,d=new Date();
+  while(true){ const ds=toDateStr(d); if(logs[ds]&&(logs[ds][hid]===true||logs[ds][hid]==="frozen")){s++;d.setDate(d.getDate()-1);}else break; }
+  return s;
+}
+function calcBestStreak(logs,hid,days){
+  let best=0,cur=0;
+  days.forEach(d=>{ if(logs[d]&&(logs[d][hid]===true||logs[d][hid]==="frozen")){cur++;best=Math.max(best,cur);}else cur=0; });
+  return best;
+}
+
+function getWeeklyRate(logs,hid){
+  const days=getLast7();
+  const done=days.filter(d=>logs[d]&&logs[d][hid]===true).length;
+  return Math.round((done/7)*100);
+}
+
+const initData = {
+  onboarded:false, userName:"", habits:[], logs:{}, freezes:{}, notes:{},
+  reviewSeen:{},
+};
+
+export default function App(){
+  const [data,setData]=useState(null);
+  const [view,setView]=useState("today");
+  const [screen,setScreen]=useState("onboard");
+  const [onboardStep,setOnboardStep]=useState(0);
+  const [nameInput,setNameInput]=useState("");
+  const [selectedCats,setSelectedCats]=useState([]);
+  const [selectedTemplates,setSelectedTemplates]=useState({});
+  const [newHabit,setNewHabit]=useState("");
+  const [newCat,setNewCat]=useState("Health");
+  const [noteHid,setNoteHid]=useState(null);
+  const [noteText,setNoteText]=useState("");
+  const [showReview,setShowReview]=useState(false);
+  const [streakGoals,setStreakGoals]=useState({});
+  const [editingGoal,setEditingGoal]=useState(null);
+  const [goalInput,setGoalInput]=useState("");
+  const [confetti,setConfetti]=useState([]);
+  const chartRef=useRef(null);
+  const chartInst=useRef(null);
+
+  useEffect(()=>{
+    load().then(d=>{
+      if(d&&d.onboarded){ setData(d); setScreen("app"); }
+      else setData({...initData});
+    });
+  },[]);
+
+  useEffect(()=>{ if(data&&data.onboarded) save(data); },[data]);
+
+  useEffect(()=>{
+    if(!data||screen!=="app") return;
+    const {habits,logs,reviewSeen={}}=data;
+    const totalToday=habits.filter(h=>logs[TODAY]&&logs[TODAY][h.id]===true).length;
+    const allDone=habits.length>0&&totalToday===habits.length;
+    const isSunday=DAY_OF_WEEK===0;
+    const reviewKey=TODAY;
+    if((allDone||isSunday)&&!reviewSeen[reviewKey]&&habits.length>0){
+      setShowReview(true);
+      setData(prev=>({...prev,reviewSeen:{...prev.reviewSeen,[reviewKey]:true}}));
+    }
+  },[data?.logs]);
+
+  useEffect(()=>{
+    if(view!=="progress"||!data||!chartRef.current) return;
+    const days=getLast30();
+    const go=()=>{
+      if(chartInst.current) chartInst.current.destroy();
+      const pcts=days.map(d=>{
+        if(!data.habits.length) return 0;
+        const done=data.logs[d]?Object.values(data.logs[d]).filter(v=>v===true).length:0;
+        return Math.round((done/data.habits.length)*100);
+      });
+      chartInst.current=new window.Chart(chartRef.current,{
+        type:"bar",
+        data:{
+          labels:days.map(d=>{const[,m,dd]=d.split("-");return`${dd}/${m}`;}),
+          datasets:[{label:"Completion %",data:pcts,
+            backgroundColor:days.map(d=>d===TODAY?"#1C1C2E":"rgba(255,255,255,0.2)"),
+            borderRadius:4,borderSkipped:false}]
+        },
+        options:{
+          responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.parsed.y}%`}}},
+          scales:{
+            y:{min:0,max:100,ticks:{callback:v=>`${v}%`,font:{size:11},color:"rgba(255,255,255,0.6)"},grid:{color:"rgba(255,255,255,0.08)"},border:{color:"transparent"}},
+            x:{ticks:{autoSkip:true,maxTicksLimit:10,font:{size:11},color:"rgba(255,255,255,0.6)"},grid:{display:false},border:{color:"transparent"}}
+          }
+        }
+      });
+    };
+    if(window.Chart) go();
+    else{ const s=document.createElement("script"); s.src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"; s.onload=go; document.head.appendChild(s); }
+  },[view,data]);
+
+  if(!data) return <div style={{padding:"2rem",color:"#fff",fontSize:14}}>Loading…</div>;
+
+  const {habits,logs,freezes={},notes={}}=data;
+  const todayLogs=logs[TODAY]||{};
+  const totalToday=habits.filter(h=>todayLogs[h.id]===true).length;
+  const pct=habits.length?Math.round((totalToday/habits.length)*100):0;
+  const allDone=habits.length>0&&totalToday===habits.length;
+  const days30=getLast30(); const days7=getLast7();
+
+  function fireConfetti(){
+    const items=Array.from({length:18},(_,i)=>({id:i,x:Math.random()*100,color:HABIT_COLORS[i%HABIT_COLORS.length],delay:Math.random()*0.4}));
+    setConfetti(items); setTimeout(()=>setConfetti([]),2000);
+  }
+
+  function toggleLog(hid){
+    const cur=todayLogs[hid];
+    const next=cur===true?false:true;
+    setData(prev=>{
+      const nl={...prev.logs,[TODAY]:{...prev.logs[TODAY],[hid]:next}};
+      const newTotal=prev.habits.filter(h=>nl[TODAY][h.id]===true).length;
+      if(newTotal===prev.habits.length&&prev.habits.length>0) fireConfetti();
+      return {...prev,logs:nl};
+    });
+  }
+
+  function freezeStreak(hid){
+    setData(prev=>{
+      const nl={...prev.logs,[TODAY]:{...prev.logs[TODAY],[hid]:"frozen"}};
+      return {...prev,logs:nl};
+    });
+  }
+
+  function addHabit(){
+    if(!newHabit.trim()) return;
+    const h={id:Date.now().toString(),name:newHabit.trim(),cat:newCat,color:CAT_COLORS[newCat]||HABIT_COLORS[habits.length%HABIT_COLORS.length]};
+    setData(prev=>({...prev,habits:[...prev.habits,h]}));
+    setNewHabit("");
+  }
+
+  function addTemplateHabits(){
+    const toAdd=[];
+    Object.entries(selectedTemplates).forEach(([cat,names])=>{
+      names.forEach(name=>{
+        toAdd.push({id:Date.now()+Math.random(),name,cat,color:CAT_COLORS[cat]});
+      });
+    });
+    setData(prev=>({...prev,habits:[...prev.habits,...toAdd],onboarded:true,userName:nameInput.trim()||"Friend"}));
+    setScreen("app");
+  }
+
+  function removeHabit(hid){ setData(prev=>({...prev,habits:prev.habits.filter(h=>h.id!==hid)})); }
+  function saveNote(hid){ setData(prev=>({...prev,notes:{...prev.notes,[TODAY+":"+hid]:noteText}})); setNoteHid(null); setNoteText(""); }
+
+  const weeklyStats=()=>{
+    const best=habits.length?habits.reduce((b,h)=>{ const s=calcStreak(logs,h.id); return s>b.s?{s,name:h.name}:b; },{s:0,name:"-"}):null;
+    const avgDays=Math.round(days7.reduce((a,d)=>{ const done=logs[d]?Object.values(logs[d]).filter(v=>v===true).length:0; return a+done; },0)/7);
+    return {best,avgDays};
+  };
+
+  const bg={minHeight:"100vh",padding:"1.5rem 1rem",background:"linear-gradient(145deg,#0a0a14 0%,#11112a 40%,#161630 70%,#1a1a3a 100%)",fontFamily:"var(--font-sans)",position:"relative",overflow:"hidden"};
+  const glass={background:"rgba(255,255,255,0.08)",border:"0.5px solid rgba(255,255,255,0.15)",borderRadius:14};
+  const inp={padding:"9px 13px",borderRadius:9,border:"0.5px solid rgba(255,255,255,0.25)",background:"rgba(255,255,255,0.1)",color:"#fff",fontSize:14,outline:"none",fontFamily:"inherit",boxSizing:"border-box"};
+  const tabStyle=v=>({padding:"6px 14px",borderRadius:20,fontSize:12,fontFamily:"inherit",cursor:"pointer",border:"0.5px solid rgba(255,255,255,0.25)",background:view===v?"#1C1C2E":"rgba(255,255,255,0.08)",color:view===v?"#fff":"rgba(255,255,255,0.65)",fontWeight:view===v?500:400});
+  const btn=(bg2,col)=>({padding:"9px 18px",borderRadius:9,border:"0.5px solid rgba(255,255,255,0.25)",background:bg2,color:col||"#fff",fontWeight:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"});
+
+  const GeoWatermark=()=>(
+    <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:0}} xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+      {Array.from({length:12},(_,row)=>Array.from({length:8},(_,col)=>(<circle key={`${row}-${col}`} cx={col*90+45} cy={row*90+45} r="1.2" fill="rgba(255,255,255,0.07)"/>)))}
+      <circle cx="520" cy="160" r="180" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+      <circle cx="520" cy="160" r="120" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+      <circle cx="520" cy="160" r="60" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1"/>
+      <circle cx="80" cy="600" r="140" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="1"/>
+      <circle cx="80" cy="600" r="80" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+      <line x1="0" y1="200" x2="700" y2="900" stroke="rgba(255,255,255,0.03)" strokeWidth="1"/>
+      <line x1="0" y1="350" x2="700" y2="1050" stroke="rgba(255,255,255,0.025)" strokeWidth="1"/>
+      <polygon points="560,60 640,200 480,200" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+      <polygon points="30,750 60,730 90,750 90,790 60,810 30,790" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+      {[[160,320],[420,500],[260,720],[580,260]].map(([x,y],i)=>(<g key={i}><line x1={x-8} y1={y} x2={x+8} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1"/><line x1={x} y1={y-8} x2={x} y2={y+8} stroke="rgba(255,255,255,0.06)" strokeWidth="1"/></g>))}
+    </svg>
+  );
+
+  /* ── ONBOARDING ── */
+  if(screen==="onboard") return (
+    <div style={bg}>
+      <GeoWatermark/>
+      <div style={{position:"relative",zIndex:1,maxWidth:480,margin:"0 auto",paddingTop:"3rem"}}>
+        {onboardStep===0&&(
+          <div style={{...glass,padding:"2rem",textAlign:"center"}}>
+            <div style={{fontSize:36,marginBottom:12}}>✦</div>
+            <h2 style={{fontSize:22,fontWeight:500,color:"#fff",margin:"0 0 8px"}}>Welcome to HabitFlow</h2>
+            <p style={{fontSize:14,color:"rgba(255,255,255,0.5)",margin:"0 0 1.5rem"}}>Build powerful daily habits. Track streaks. Grow every day.</p>
+            <input style={{...inp,width:"100%",marginBottom:12}} placeholder="What's your name?" value={nameInput} onChange={e=>setNameInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&setOnboardStep(1)}/>
+            <button style={{...btn("#1C1C2E"),width:"100%"}} onClick={()=>setOnboardStep(1)}>Get started →</button>
+          </div>
+        )}
+        {onboardStep===1&&(
+          <div style={{...glass,padding:"2rem"}}>
+            <h2 style={{fontSize:18,fontWeight:500,color:"#fff",margin:"0 0 4px"}}>Pick your categories</h2>
+            <p style={{fontSize:13,color:"rgba(255,255,255,0.45)",margin:"0 0 1rem"}}>Select what matters to you, {nameInput||"friend"}.</p>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:"1rem"}}>
+              {CATS.map(c=>{
+                const sel=selectedCats.includes(c);
+                return <button key={c} onClick={()=>setSelectedCats(prev=>sel?prev.filter(x=>x!==c):[...prev,c])} style={{padding:"10px",borderRadius:10,border:`0.5px solid ${sel?CAT_COLORS[c]:"rgba(255,255,255,0.15)"}`,background:sel?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.05)",color:sel?"#fff":"rgba(255,255,255,0.55)",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:sel?500:400,display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:CAT_COLORS[c],display:"inline-block",flexShrink:0}}/>
+                  {c}
+                </button>;
+              })}
+            </div>
+            <button disabled={!selectedCats.length} onClick={()=>setOnboardStep(2)} style={{...btn(selectedCats.length?"#1C1C2E":"rgba(255,255,255,0.1)"),width:"100%",opacity:selectedCats.length?1:0.5}}>Next →</button>
+          </div>
+        )}
+        {onboardStep===2&&(
+          <div style={{...glass,padding:"2rem"}}>
+            <h2 style={{fontSize:18,fontWeight:500,color:"#fff",margin:"0 0 4px"}}>Pick your habits</h2>
+            <p style={{fontSize:13,color:"rgba(255,255,255,0.45)",margin:"0 0 1rem"}}>Choose from templates or add your own later.</p>
+            <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:"1rem"}}>
+              {selectedCats.map(cat=>(
+                <div key={cat}>
+                  <div style={{fontSize:12,color:CAT_COLORS[cat],fontWeight:500,marginBottom:6,letterSpacing:"0.05em"}}>{cat.toUpperCase()}</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                    {TEMPLATES[cat].map(t=>{
+                      const sel=selectedTemplates[cat]?.includes(t);
+                      return <button key={t} onClick={()=>setSelectedTemplates(prev=>{const arr=prev[cat]||[]; return {...prev,[cat]:sel?arr.filter(x=>x!==t):[...arr,t]};})} style={{padding:"8px 12px",borderRadius:8,border:`0.5px solid ${sel?CAT_COLORS[cat]:"rgba(255,255,255,0.12)"}`,background:sel?"rgba(255,255,255,0.1)":"rgba(255,255,255,0.04)",color:sel?"#fff":"rgba(255,255,255,0.5)",cursor:"pointer",fontFamily:"inherit",fontSize:13,textAlign:"left"}}>
+                        {sel?"✓ ":""}{t}
+                      </button>;
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={addTemplateHabits} style={{...btn("#1C1C2E"),width:"100%"}}>Start tracking →</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  /* ── WEEKLY REVIEW MODAL ── */
+  const ReviewModal=()=>{
+    if(!showReview) return null;
+    const {best,avgDays}=weeklyStats();
+    const isSun=DAY_OF_WEEK===0;
+    return (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+        <div style={{...glass,padding:"2rem",maxWidth:360,width:"100%",textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:8}}>{allDone?"🏆":"📊"}</div>
+          <h2 style={{fontSize:18,fontWeight:500,color:"#fff",margin:"0 0 4px"}}>{allDone&&!isSun?"All habits done!":isSun?"Weekly review":"Keep going!"}</h2>
+          <p style={{fontSize:13,color:"rgba(255,255,255,0.45)",margin:"0 0 1.25rem"}}>{isSun?"Here's how your week looked:":"You crushed today's habits!"}</p>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:"1.25rem"}}>
+            {[{l:"Avg habits/day",v:avgDays},{l:"Best streak habit",v:best?.name||"-"},{l:"This week",v:`${days7.filter(d=>habits.some(h=>logs[d]&&logs[d][h.id]===true)).length}/7 days`},{l:"Total habits",v:habits.length}].map(c=>(
+              <div key={c.l} style={{background:"rgba(255,255,255,0.07)",borderRadius:10,padding:"10px"}}>
+                <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginBottom:3}}>{c.l}</div>
+                <div style={{fontSize:15,fontWeight:500,color:"#fff",wordBreak:"break-word"}}>{c.v}</div>
+              </div>
+            ))}
+          </div>
+          <button onClick={()=>setShowReview(false)} style={{...btn("#1C1C2E"),width:"100%"}}>Let's keep going →</button>
+        </div>
+      </div>
+    );
+  };
+
+  /* ── CONFETTI ── */
+  const Confetti=()=>(
+    <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:200,overflow:"hidden"}}>
+      {confetti.map(c=>(
+        <div key={c.id} style={{position:"absolute",left:`${c.x}%`,top:"-10px",width:8,height:8,borderRadius:2,background:c.color,animation:`fall 1.8s ease-in ${c.delay}s forwards`}}/>
+      ))}
+      <style>{`@keyframes fall{0%{transform:translateY(0) rotate(0deg);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}`}</style>
+    </div>
+  );
+
+  /* ── MAIN APP ── */
+  const catGroups=[...new Set(habits.map(h=>h.cat))];
+
+  return (
+    <div style={bg}>
+      <GeoWatermark/>
+      <ReviewModal/>
+      <Confetti/>
+
+      {/* Note modal */}
+      {noteHid&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+          <div style={{...glass,padding:"1.5rem",maxWidth:340,width:"100%"}}>
+            <h3 style={{fontSize:15,fontWeight:500,color:"#fff",margin:"0 0 10px"}}>Add a note for today</h3>
+            <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} rows={3}
+              style={{...inp,width:"100%",resize:"none",marginBottom:10}}
+              placeholder="How did it go? Any thoughts…"/>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>saveNote(noteHid)} style={{...btn("#1C1C2E"),flex:1}}>Save</button>
+              <button onClick={()=>setNoteHid(null)} style={{...btn("rgba(255,255,255,0.08)"),flex:1}}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{position:"relative",zIndex:1,maxWidth:640,margin:"0 auto"}}>
+
+        {/* Header */}
+        <div style={{marginBottom:"1.25rem",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <h2 style={{fontSize:20,fontWeight:500,margin:"0 0 3px",color:"#fff"}}>
+              Hey {data.userName} {allDone?"— you crushed it! ✓":""}
+            </h2>
+            <p style={{margin:0,fontSize:12,color:"rgba(255,255,255,0.45)",fontStyle:"italic"}}>"{quote}"</p>
+          </div>
+          <button onClick={()=>setShowReview(true)} style={{...btn("rgba(255,255,255,0.08)"),fontSize:12,padding:"6px 12px",whiteSpace:"nowrap"}}>Weekly review</button>
+        </div>
+
+        {/* Progress ring + stats */}
+        <div style={{...glass,padding:"1rem 1.25rem",marginBottom:"1.25rem",display:"flex",alignItems:"center",gap:20}}>
+          <svg width="68" height="68" viewBox="0 0 72 72">
+            <circle cx="36" cy="36" r="28" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="6"/>
+            <circle cx="36" cy="36" r="28" fill="none" stroke={allDone?"#378ADD":"#378ADD"}
+              strokeWidth="6" strokeLinecap="round"
+              strokeDasharray={`${2*Math.PI*28}`}
+              strokeDashoffset={`${2*Math.PI*28*(1-pct/100)}`}
+              transform="rotate(-90 36 36)" style={{transition:"stroke-dashoffset 0.5s"}}/>
+            <text x="36" y="41" textAnchor="middle" fill="#fff" fontSize="14" fontWeight="500">{pct}%</text>
+          </svg>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 20px",flex:1}}>
+            {[
+              {l:"Done today",v:`${totalToday} / ${habits.length}`},
+              {l:"Best streak",v:`${habits.length?Math.max(0,...habits.map(h=>calcStreak(logs,h.id))):0}d`},
+              {l:"This week",v:`${days7.filter(d=>habits.some(h=>logs[d]&&logs[d][h.id]===true)).length}/7`},
+              {l:"Month avg",v:`${habits.length&&days30.length?Math.round(days30.reduce((a,d)=>{const done=logs[d]?Object.values(logs[d]).filter(v=>v===true).length:0;return a+done/habits.length;},0)/30*100):0}%`},
+            ].map(c=>(
+              <div key={c.l}>
+                <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginBottom:1}}>{c.l}</div>
+                <div style={{fontSize:16,fontWeight:500,color:"#fff"}}>{c.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div style={{display:"flex",gap:6,marginBottom:"1.25rem",flexWrap:"wrap"}}>
+          {["today","progress","manage"].map(v=>(
+            <button key={v} style={tabStyle(v)} onClick={()=>setView(v)}>
+              {v==="today"?"Today":v==="progress"?"Progress":"Manage"}
+            </button>
+          ))}
+        </div>
+
+        {/* TODAY */}
+        {view==="today"&&(
+          habits.length===0
+            ?<div style={{...glass,padding:"2rem",textAlign:"center"}}>
+              <div style={{fontSize:28,marginBottom:8}}>✦</div>
+              <p style={{color:"rgba(255,255,255,0.5)",fontSize:14,margin:"0 0 12px"}}>No habits yet. Go to Manage to add some.</p>
+              <button onClick={()=>setView("manage")} style={{...btn("#1C1C2E"),fontSize:13}}>Go to Manage →</button>
+            </div>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {catGroups.map(cat=>(
+                <div key={cat}>
+                  <div style={{fontSize:11,color:CAT_COLORS[cat]||"rgba(255,255,255,0.4)",fontWeight:500,letterSpacing:"0.06em",marginBottom:6}}>{cat.toUpperCase()}</div>
+                  {habits.filter(h=>h.cat===cat).map(h=>{
+                    const status=todayLogs[h.id];
+                    const done=status===true;
+                    const frozen=status==="frozen";
+                    const streak=calcStreak(logs,h.id);
+                    const goal=streakGoals[h.id];
+                    const noteKey=TODAY+":"+h.id;
+                    return (
+                      <div key={h.id} style={{...glass,padding:"12px 14px",marginBottom:6,background:done?"rgba(28,28,46,0.8)":frozen?"rgba(55,100,180,0.15)":"rgba(255,255,255,0.05)",border:done?`0.5px solid rgba(55,138,221,0.4)`:frozen?"0.5px solid rgba(55,138,221,0.25)":"0.5px solid rgba(255,255,255,0.12)"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:11}}>
+                          <div onClick={()=>toggleLog(h.id)} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,background:done?h.color:frozen?"rgba(55,138,221,0.3)":"transparent",border:`2px solid ${done?h.color:frozen?"#378ADD":h.color}`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",transition:"all 0.2s"}}>
+                            {done&&<svg width="11" height="9" viewBox="0 0 12 9"><polyline points="1,4.5 4.5,8 11,1" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            {frozen&&<span style={{fontSize:10}}>❄</span>}
+                          </div>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:14,fontWeight:500,color:"#fff",textDecoration:done?"line-through":"none",opacity:done?0.65:1}}>{h.name}</div>
+                            <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1,display:"flex",gap:8,flexWrap:"wrap"}}>
+                              <span>{streak>0?`${streak}-day streak`:"No streak"}</span>
+                              {goal&&<span style={{color:"rgba(255,255,255,0.3)"}}>· goal: {goal}d {streak>=goal?"✓":""}</span>}
+                              {notes[noteKey]&&<span style={{color:"rgba(255,255,255,0.3)"}}>· note saved</span>}
+                            </div>
+                            {goal&&<div style={{height:3,borderRadius:2,background:"rgba(255,255,255,0.1)",marginTop:5}}>
+                              <div style={{height:"100%",borderRadius:2,background:h.color,width:`${Math.min(100,Math.round((streak/goal)*100))}%`,transition:"width 0.4s"}}/>
+                            </div>}
+                          </div>
+                          <div style={{display:"flex",gap:4,flexShrink:0}}>
+                            {!done&&!frozen&&<button onClick={()=>freezeStreak(h.id)} title="Freeze streak" style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",fontSize:13,padding:"2px 4px"}}>❄</button>}
+                            <button onClick={()=>{setNoteHid(h.id);setNoteText(notes[noteKey]||"");}} title="Add note" style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",fontSize:13,padding:"2px 4px"}}>✎</button>
+                            {editingGoal===h.id
+                              ?<input autoFocus value={goalInput} onChange={e=>setGoalInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){setStreakGoals(p=>({...p,[h.id]:parseInt(goalInput)||undefined}));setEditingGoal(null);}if(e.key==="Escape")setEditingGoal(null);}} style={{...inp,width:44,padding:"2px 6px",fontSize:12}} placeholder="days"/>
+                              :<button onClick={()=>{setEditingGoal(h.id);setGoalInput(goal||"");}} title="Set streak goal" style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",fontSize:11,padding:"2px 4px"}}>🎯</button>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              {allDone&&<div style={{...glass,padding:"12px 16px",textAlign:"center",color:"#fff",fontWeight:500,fontSize:14,background:"rgba(28,28,46,0.9)",border:"0.5px solid rgba(55,138,221,0.4)"}}>All habits completed today! Keep the momentum going.</div>}
+            </div>
+        )}
+
+        {/* PROGRESS */}
+        {view==="progress"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{...glass,padding:"1rem"}}>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginBottom:10}}>Daily completion — last 30 days</div>
+              <div style={{position:"relative",height:190}}>
+                <canvas ref={chartRef} role="img" aria-label="Bar chart of daily habit completion over last 30 days">Daily completion over 30 days.</canvas>
+              </div>
+            </div>
+            {habits.map(h=>{
+              const doneCount=days30.filter(d=>logs[d]&&logs[d][h.id]===true).length;
+              const pctH=Math.round((doneCount/30)*100);
+              const best=calcBestStreak(logs,h.id,days30);
+              const wRate=getWeeklyRate(logs,h.id);
+              return (
+                <div key={h.id} style={{...glass,padding:"12px 16px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{width:9,height:9,borderRadius:"50%",background:h.color}}/>
+                      <span style={{fontSize:13,fontWeight:500,color:"#fff"}}>{h.name}</span>
+                      <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.45)"}}>{h.cat}</span>
+                    </div>
+                    <span style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{doneCount}/30 · best {best}d · week {wRate}%</span>
+                  </div>
+                  <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,0.08)"}}>
+                    <div style={{height:"100%",borderRadius:3,background:h.color,width:`${pctH}%`,transition:"width 0.5s"}}/>
+                  </div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.3)",marginTop:4}}>{pctH}% this month</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* MANAGE */}
+        {view==="manage"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{...glass,padding:"1rem"}}>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginBottom:8}}>Add a custom habit</div>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                <input style={{...inp,flex:1}} placeholder="Habit name…" value={newHabit} onChange={e=>setNewHabit(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addHabit()}/>
+                <button onClick={addHabit} style={{...btn("#1C1C2E"),padding:"9px 16px",whiteSpace:"nowrap"}}>Add</button>
+              </div>
+              <select value={newCat} onChange={e=>setNewCat(e.target.value)} style={{...inp,width:"100%"}}>
+                {CATS.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            {catGroups.map(cat=>(
+              <div key={cat}>
+                <div style={{fontSize:11,color:CAT_COLORS[cat],fontWeight:500,letterSpacing:"0.06em",marginBottom:6}}>{cat.toUpperCase()}</div>
+                {habits.filter(h=>h.cat===cat).map(h=>(
+                  <div key={h.id} style={{...glass,padding:"11px 14px",marginBottom:6,display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{width:9,height:9,borderRadius:"50%",background:h.color,flexShrink:0}}/>
+                    <span style={{flex:1,fontSize:13,color:"#fff"}}>{h.name}</span>
+                    <span style={{fontSize:11,color:"rgba(255,255,255,0.35)"}}>{days30.filter(d=>logs[d]&&logs[d][h.id]===true).length}d logged</span>
+                    <button onClick={()=>removeHabit(h.id)} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",fontSize:15,padding:"2px 4px"}}>✕</button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
